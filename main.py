@@ -8,7 +8,7 @@ app = FastAPI()
 
 # Configuración
 ACCESS_TOKEN = "APP_USR-7399764412139422-042622-5c8000e5a8932bbbdae5e8d418480e65-89912040"
-BASE_URL = 'https://render-notificacion.onrender.com/'
+BASE_URL = 'https://streamlit-test-eiu8.onrender.com'
 
 # CORS
 app.add_middleware(
