@@ -82,55 +82,38 @@ async def crear_pago(request: Request):
 @app.post("/verificar_pago/")
 async def verificar_pago(request: Request):
     try:
-        # Acepta tanto JSON como form-data
-        try:
-            data = await request.json()
-        except:
-            data = await request.form()
+        data = await request.json()
+        preference_id = data.get("preference_id")
         
-        # Debug: Imprime los datos recibidos
-        print(f"📨 Datos recibidos para verificación: {data}")
-        
-        # Obtiene el ID de diferentes formas posibles
-        payment_id = (data.get("payment_id") or 
-                     data.get("data.id") or 
-                     data.get("id") or
-                     data.get("data", {}).get("id"))
-        
-        if not payment_id:
-            print("❌ No se encontró payment_id en los datos")
-            raise HTTPException(status_code=400, detail="Se requiere un payment_id")
-        
-        print(f"🔍 Verificando pago con ID: {payment_id}")
-        
-        # Consulta a la API de MercadoPago
+        if not preference_id:
+            raise HTTPException(status_code=400, detail="Se requiere preference_id")
+
+        # 1. Buscar en la API de MP los pagos para esta preferencia
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        response = requests.get(
-            f"https://api.mercadopago.com/v1/payments/{payment_id}",
-            headers=headers
-        )
+        search_url = f"https://api.mercadopago.com/v1/payments/search?external_reference={preference_id}"
+        
+        response = requests.get(search_url, headers=headers)
         
         if response.status_code != 200:
-            error_msg = response.json().get("message", "Error al verificar el pago")
-            print(f"❌ Error de MP: {error_msg}")
-            raise HTTPException(status_code=400, detail=error_msg)
+            raise HTTPException(status_code=400, detail="Error al buscar pagos")
+
+        results = response.json().get("results", [])
         
-        payment_data = response.json()
-        print(f"📊 Estado del pago: {payment_data.get('status')}")
+        if not results:
+            return {"status": "pending", "detail": "No se encontraron pagos"}
+
+        # 2. Tomar el pago más reciente
+        latest_payment = max(results, key=lambda x: x["date_created"])
         
         return {
-            "status": payment_data["status"],
-            "payment_id": payment_id,
-            "monto": payment_data.get("transaction_amount"),
-            "fecha": payment_data.get("date_approved")
+            "status": latest_payment["status"],
+            "payment_id": latest_payment["id"],
+            "monto": latest_payment["transaction_amount"],
+            "fecha": latest_payment["date_approved"]
         }
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"🔥 Error inesperado: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/notificacion/")
 async def webhook(request: Request):
