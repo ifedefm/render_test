@@ -115,31 +115,69 @@ async def verificar_pago(request: Request):
 
 @app.post("/notificacion/")
 async def webhook(request: Request):
+    """Endpoint optimizado para MercadoPago"""
     try:
-        # Aceptar tanto JSON como form-data
+        # 1. Aceptar cualquier formato de notificación
         try:
             data = await request.json()
         except:
             data = await request.form()
         
-        print(f"🔔 Webhook recibido: {data}")  # Debug crucial
+        print(f"📨 Notificación recibida: {data}")  # Debug esencial
 
-        # Respuesta inmediata (MP espera respuesta en <5 segundos)
-        response = JSONResponse(content={"status": "received"})
-        
-        # Procesamiento en segundo plano (async)
-        if "data" in data and "id" in data["data"]:
+        # 2. Respuesta INMEDIATA (MP requiere <500ms)
+        response = JSONResponse(
+            content={"status": "received"},
+            status_code=200
+        )
+
+        # 3. Procesamiento en segundo plano (no bloqueante)
+        if data.get("data", {}).get("id"):
             payment_id = data["data"]["id"]
             
-            # Verificar el pago (en background)
+            # Ejecutar en thread separado
             import threading
-            threading.Thread(target=process_payment, args=(payment_id,)).start()
-        
+            threading.Thread(
+                target=process_mp_payment,
+                args=(payment_id,),
+                daemon=True
+            ).start()
+
         return response
 
     except Exception as e:
-        print(f"❌ Error en webhook: {str(e)}")
-        return JSONResponse(content={"status": "error"}, status_code=500)
+        print(f"🚨 Error crítico: {str(e)}")
+        return JSONResponse(
+            content={"status": "error"},
+            status_code=500
+        )
+
+def process_mp_payment(payment_id: str):
+    """Procesa el pago de forma asíncrona"""
+    try:
+        print(f"🔍 Procesando pago {payment_id}...")
+        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        
+        # 1. Obtener detalles del pago
+        payment_data = requests.get(
+            f"https://api.mercadopago.com/v1/payments/{payment_id}",
+            headers=headers,
+            timeout=10
+        ).json()
+
+        # 2. Guardar en base de datos (ejemplo con diccionario)
+        preference_id = payment_data.get("external_reference")
+        if preference_id:
+            payments_db[preference_id] = {
+                "payment_id": payment_id,
+                "status": payment_data["status"],
+                "monto": payment_data["transaction_amount"],
+                "fecha": payment_data["date_approved"]
+            }
+            print(f"✅ Pago registrado: {preference_id}")
+
+    except Exception as e:
+        print(f"⚠️ Error en background: {str(e)}")
 
 def process_payment(payment_id: str):
     """Procesa el pago en segundo plano"""
