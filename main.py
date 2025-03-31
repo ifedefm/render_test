@@ -8,8 +8,8 @@ from threading import Thread
 app = FastAPI()
 
 # Configuración
-ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "TU_ACCESS_TOKEN")  # Cambia por tu token real
-BASE_URL = os.getenv("BASE_URL", "https://tu-api.com")  # Tu URL pública
+ACCESS_TOKEN = ("APP_USR-5177967231468413-032619-a7b3ab70df053bfb323007e57562341f-324622221")  # Cambia por tu token real
+BASE_URL = 'https://streamlit-test-eiu8.onrender.com'  # Tu URL pública
 
 # CORS
 app.add_middleware(
