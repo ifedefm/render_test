@@ -66,9 +66,6 @@ async def crear_pago(request: Request):
             json=preference_data,
             headers=headers
         )
-        #Logs Temporales
-        print(f"🔧 Token MP usado: {ACCESS_TOKEN[:5]}...")  # Muestra primeros 5 chars
-        print(f"🌐 Notification URL: {BASE_URL}/notificacion/")
         if response.status_code != 201:
             error_msg = response.json().get("message", "Error en MercadoPago")
             raise HTTPException(status_code=400, detail=error_msg)
