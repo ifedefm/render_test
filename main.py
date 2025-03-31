@@ -116,48 +116,57 @@ async def verificar_pago(request: Request):
 @app.post("/notificacion/")
 async def webhook(request: Request):
     try:
-        print("\n🔔 Notificación recibida")  # Debug en logs
-        
-        # Opción 1: Para content-type: application/json
+        # Aceptar tanto JSON como form-data
         try:
             data = await request.json()
-            print(f"📦 JSON data: {data}")
         except:
-            # Opción 2: Para x-www-form-urlencoded
-            form_data = await request.form()
-            data = dict(form_data)
-            print(f"📦 Form data: {data}")
+            data = await request.form()
         
-        payment_id = data.get("data.id") or data.get("id")
-        if not payment_id:
-            print("⚠️ No se encontró payment_id")
-            return {"status": "invalid_data"}
+        print(f"🔔 Webhook recibido: {data}")  # Debug crucial
+
+        # Respuesta inmediata (MP espera respuesta en <5 segundos)
+        response = JSONResponse(content={"status": "received"})
         
-        print(f"🔍 Verificando pago: {payment_id}")
+        # Procesamiento en segundo plano (async)
+        if "data" in data and "id" in data["data"]:
+            payment_id = data["data"]["id"]
+            
+            # Verificar el pago (en background)
+            import threading
+            threading.Thread(target=process_payment, args=(payment_id,)).start()
         
-        # Verificar el pago
+        return response
+
+    except Exception as e:
+        print(f"❌ Error en webhook: {str(e)}")
+        return JSONResponse(content={"status": "error"}, status_code=500)
+
+def process_payment(payment_id: str):
+    """Procesa el pago en segundo plano"""
+    try:
+        print(f"🔍 Procesando pago {payment_id}...")
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        payment_response = requests.get(
+        
+        # 1. Obtener detalles del pago
+        payment_info = requests.get(
             f"https://api.mercadopago.com/v1/payments/{payment_id}",
             headers=headers
-        )
+        ).json()
         
-        if payment_response.status_code != 200:
-            error_msg = payment_response.json().get("message", "Error en MP")
-            print(f"❌ Error MP: {error_msg}")
-            return {"status": "error", "detail": error_msg}
+        print(f"📊 Estado del pago: {payment_info.get('status')}")
         
-        payment_data = payment_response.json()
-        print(f"📊 Estado del pago: {payment_data.get('status')}")
-        
-        return {"status": "processed"}
-        
+        # 2. Guardar en base de datos (ejemplo con diccionario)
+        preference_id = payment_info.get("external_reference")
+        if preference_id:
+            payments_db[preference_id] = {
+                "payment_id": payment_id,
+                "status": payment_info["status"],
+                "monto": payment_info["transaction_amount"]
+            }
+            print(f"💾 Guardado: {preference_id} → {payment_id}")
+            
     except Exception as e:
-        print(f"🔥 Error crítico: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(e)}
-        )
+        print(f"🔥 Error en background: {str(e)}")
 
 
 @app.get("/")
