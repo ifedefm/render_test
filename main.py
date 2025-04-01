@@ -42,7 +42,12 @@ async def crear_pago(request: Request):
             }],
             "payer": {"email": email},
             "payment_methods": {"excluded_payment_types": [{"id": "atm"}]},
-            "auto_return": "approved",
+            "back_urls": {  # 👈 URLs obligatorias con auto_return
+                "success": f"{BASE_URL}/pago_exitoso",
+                "failure": f"{BASE_URL}/pago_fallido",
+                "pending": f"{BASE_URL}/pago_pendiente"
+            },
+            "auto_return": "approved",  # Redirige automáticamente al éxito
             "notification_url": f"{BASE_URL}/notificacion/",
             "external_reference": usuario_id,
             "binary_mode": True
