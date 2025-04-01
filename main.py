@@ -97,23 +97,23 @@ async def crear_pago(request: Request):
 @app.post("/notificacion/")
 async def webhook(request: Request):
     try:
-        # Aceptar JSON o form-data
+        # Aceptar tanto JSON como form-data
         try:
             data = await request.json()
         except:
-            data = await request.form()
-            data = dict(data)
+            form_data = await request.form()
+            data = dict(form_data)
 
         logger.info(f"Notificación recibida: {data}")
 
         # Respuesta inmediata (MP requiere <500ms)
         response = JSONResponse(content={"status": "received"})
         
-        # Procesar en background si hay payment_id
-        if data.get("data", {}).get("id"):
-            payment_id = data["data"]["id"]
-            
-            # Ejecutar en thread separado
+        # Extraer payment_id de diferentes formatos de notificación
+        payment_id = data.get("data", {}).get("id") or data.get("id")
+        
+        if payment_id:
+            # Procesar en segundo plano
             Thread(
                 target=process_payment_background,
                 args=(payment_id,),
@@ -127,59 +127,41 @@ async def webhook(request: Request):
         return JSONResponse(content={"status": "error"}, status_code=500)
 
 def process_payment_background(payment_id: str):
-    """Procesa el pago en segundo plano con reintentos"""
-    max_retries = 3
-    retry_delay = 2
-    
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Procesando pago {payment_id} (intento {attempt + 1})")
-            headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-            
-            # Obtener detalles del pago con timeout
-            payment_response = requests.get(
-                f"https://api.mercadopago.com/v1/payments/{payment_id}",
-                headers=headers,
-                timeout=10
-            )
-            
-            if payment_response.status_code != 200:
-                error_msg = payment_response.json().get("message", "Error desconocido")
-                logger.error(f"Error al obtener pago {payment_id}: {error_msg}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return
+    """Procesa el pago y conecta preference_id con payment_id"""
+    try:
+        logger.info(f"Procesando pago: {payment_id}")
+        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        
+        # 1. Obtener detalles del pago desde MP
+        payment_data = requests.get(
+            f"https://api.mercadopago.com/v1/payments/{payment_id}",
+            headers=headers,
+            timeout=10
+        ).json()
 
-            payment_data = payment_response.json()
-            status = payment_data.get("status")
-            preference_id = payment_data.get("external_reference")
-            
-            if not preference_id:
-                logger.error(f"No se encontró external_reference para el pago {payment_id}")
-                return
+        # 2. Obtener el preference_id (external_reference)
+        preference_id = payment_data.get("external_reference")
+        status = payment_data.get("status")
+        
+        if not preference_id:
+            logger.error(f"No se encontró external_reference para el pago {payment_id}")
+            return
 
-            # Guardar en base de datos
-            payments_db[preference_id] = {
-                "payment_id": payment_id,
-                "status": status,
-                "monto": payment_data.get("transaction_amount"),
-                "fecha": payment_data.get("date_approved"),
-                "last_updated": datetime.now().isoformat()
-            }
-            
-            logger.info(f"Pago registrado: {preference_id} -> Estado: {status}")
-            break
+        # 3. Guardar en base de datos la relación
+        payments_db[preference_id] = {
+            "payment_id": payment_id,
+            "status": status,
+            "monto": payment_data.get("transaction_amount"),
+            "fecha": payment_data.get("date_approved"),
+            "actualizado": datetime.now().isoformat()
+        }
+        
+        logger.info(f"Pago registrado: {preference_id} -> {payment_id}")
 
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Error de conexión al procesar pago (intento {attempt + 1}): {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-        except Exception as e:
-            logger.error(f"Error inesperado al procesar pago: {str(e)}")
-            break
+    except Exception as e:
+        logger.error(f"Error al procesar pago {payment_id}: {str(e)}")
 
+@app.post("/verificar_pago/")
 @app.post("/verificar_pago/")
 async def verificar_pago(request: Request):
     try:
@@ -189,50 +171,38 @@ async def verificar_pago(request: Request):
         if not preference_id:
             raise HTTPException(status_code=400, detail="Se requiere preference_id")
 
-        logger.info(f"Verificando pago para preferencia: {preference_id}")
-
         # 1. Buscar en base de datos local
         if preference_id in payments_db:
-            logger.info(f"Pago encontrado en base local: {payments_db[preference_id]}")
             return payments_db[preference_id]
         
-        # 2. Consultar directamente a MP si no está localmente
+        # 2. Si no está local, buscar en MercadoPago
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         search_url = f"https://api.mercadopago.com/v1/payments/search?external_reference={preference_id}"
         
         response = requests.get(search_url, headers=headers, timeout=15)
         
         if response.status_code != 200:
-            error_msg = response.json().get("message", "Error al buscar pagos")
-            logger.error(f"Error al buscar pagos: {error_msg}")
-            raise HTTPException(status_code=400, detail=error_msg)
+            raise HTTPException(status_code=400, detail="Error al buscar pagos")
 
         results = response.json().get("results", [])
         
         if not results:
-            logger.info(f"No se encontraron pagos para la preferencia {preference_id}")
-            return {"status": "pending", "detail": "No se encontraron transacciones"}
+            return {"status": "pending"}
 
         # Tomar el pago más reciente
         latest_payment = max(results, key=lambda x: x["date_created"])
         
-        # Actualizar base de datos local
+        # Guardar en base de datos para futuras consultas
         payments_db[preference_id] = {
             "payment_id": latest_payment["id"],
             "status": latest_payment["status"],
             "monto": latest_payment["transaction_amount"],
-            "fecha": latest_payment["date_approved"],
-            "last_updated": datetime.now().isoformat()
+            "fecha": latest_payment["date_approved"]
         }
-        
-        logger.info(f"Pago actualizado desde MP: {payments_db[preference_id]}")
+
         return payments_db[preference_id]
 
-    except requests.exceptions.Timeout:
-        logger.error("Timeout al consultar MercadoPago")
-        raise HTTPException(status_code=504, detail="Timeout al consultar MercadoPago")
     except Exception as e:
-        logger.error(f"Error inesperado al verificar pago: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/pago_exitoso")
