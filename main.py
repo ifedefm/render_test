@@ -51,7 +51,7 @@ async def crear_pago(request: Request):
             "payer": {"email": email},
             "payment_methods": {"excluded_payment_types": [{"id": "atm"}]},
             "back_urls": {
-                "success": f"{BASE_URL}/pago_exitoso",
+                "success": "https://testmiurlrender.streamlit.app/pago_exitoso",
                 "failure": f"{BASE_URL}/pago_fallido",
                 "pending": f"{BASE_URL}/pago_pendiente"
             },
@@ -100,6 +100,7 @@ async def webhook(request: Request):
         # Aceptar tanto JSON como form-data
         try:
             data = await request.json()
+            logger.info(f"Datos recibidos en formato JSON: {data}")
         except:
             form_data = await request.form()
             data = dict(form_data)
