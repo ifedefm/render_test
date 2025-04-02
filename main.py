@@ -103,78 +103,48 @@ async def crear_pago(request: Request):
 @app.post("/notificacion/")
 async def webhook(request: Request):
     try:
-        # Manejar tanto JSON como form-data
+        # Manejar diferentes formatos de notificación
         try:
-            data = await request.json()
-        except:
-            data = await request.form()
-            data = dict(data)
+            content_type = request.headers.get('content-type')
+            if content_type == 'application/json':
+                data = await request.json()
+            else:
+                data = await request.form()
+                data = dict(data)
+        except Exception as e:
+            logger.error(f"Error al parsear notificación: {str(e)}")
+            return JSONResponse(content={"status": "parse_error"}, status_code=400)
 
         logger.info(f"Notificación recibida: {data}")
 
-        # Manejar diferentes tipos de notificaciones
-        if 'merchant_order' in data.get('topic', ''):
-            return await handle_merchant_order(data)
-        elif 'payment' in data.get('topic', ''):
-            return await handle_payment(data)
-        else:
-            logger.error(f"Tipo de notificación no soportada: {data}")
-            return JSONResponse(content={"status": "unsupported_notification"}, status_code=400)
+        # Manejar diferentes tipos de notificación
+        payment_id = None
+        if 'data' in data and 'id' in data['data']:  # Formato nuevo
+            payment_id = data['data']['id']
+        elif 'id' in data:  # Formato alternativo
+            payment_id = data['id']
+        elif 'resource' in data:  # Notificación por query params
+            payment_id = data.get('resource')
+
+        if not payment_id:
+            logger.error("No se pudo extraer payment_id de la notificación")
+            return JSONResponse(content={"status": "invalid_data"}, status_code=400)
+
+        # Procesar en segundo plano
+        Thread(
+            target=process_payment_notification,
+            args=(payment_id,),
+            daemon=True
+        ).start()
+
+        return JSONResponse(content={"status": "received"})
 
     except Exception as e:
         logger.error(f"Error en webhook: {str(e)}")
         return JSONResponse(content={"status": "error"}, status_code=500)
 
-async def handle_merchant_order(data: dict):
-    """Procesa notificaciones de merchant_order"""
-    merchant_order_url = data.get('resource')
-    if not merchant_order_url:
-        logger.error("No se encontró resource en merchant_order")
-        return JSONResponse(content={"status": "invalid_data"}, status_code=400)
-
-    try:
-        # Obtener detalles de la merchant order
-        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        response = requests.get(merchant_order_url, headers=headers, timeout=10)
-        merchant_order = response.json()
-
-        merchant_order_id = merchant_order.get('id')
-        payments = merchant_order.get('payments', [])
-        
-        if payments:
-            payment_id = payments[0].get('id')
-            external_ref = merchant_order.get('external_reference')
-            
-            if payment_id and external_ref:
-                Thread(
-                    target=process_payment,
-                    args=(payment_id, external_ref),
-                    daemon=True
-                ).start()
-
-        return JSONResponse(content={"status": "processed"})
-
-    except Exception as e:
-        logger.error(f"Error al procesar merchant_order: {str(e)}")
-        return JSONResponse(content={"status": "error"}, status_code=500)
-
-async def handle_payment(data: dict):
-    """Procesa notificaciones de payment"""
-    payment_id = data.get('data', {}).get('id') or data.get('id')
-    if not payment_id:
-        logger.error("No se encontró payment_id en la notificación")
-        return JSONResponse(content={"status": "invalid_data"}, status_code=400)
-
-    Thread(
-        target=process_payment,
-        args=(payment_id, None),  # external_ref se obtendrá al procesar
-        daemon=True
-    ).start()
-
-    return JSONResponse(content={"status": "received"})
-
-def process_payment(payment_id: str, external_ref: str = None):
-    """Procesa un pago y actualiza la base de datos"""
+def process_payment_notification(payment_id: str):
+    """Procesa una notificación de pago de forma robusta"""
     try:
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         
@@ -185,31 +155,38 @@ def process_payment(payment_id: str, external_ref: str = None):
             timeout=10
         ).json()
 
-        # Obtener external_reference si no se proporcionó
-        external_ref = external_ref or payment_data.get('external_reference')
+        # Validar respuesta
+        if 'status' not in payment_data:
+            logger.error(f"Respuesta inválida de MP para payment_id {payment_id}")
+            return
+
+        external_ref = payment_data.get('external_reference')
         if not external_ref:
             logger.error(f"No se encontró external_reference para el pago {payment_id}")
             return
 
         # Actualizar base de datos
+        payment_info = {
+            "payment_id": payment_id,
+            "status": payment_data.get('status'),
+            "monto": payment_data.get('transaction_amount'),
+            "fecha_actualizacion": datetime.now().isoformat()
+        }
+
         if external_ref in payments_db:
-            payments_db[external_ref].update({
-                "payment_id": payment_id,
-                "status": payment_data.get('status', 'pending'),
-                "fecha_actualizacion": datetime.now().isoformat()
-            })
+            payments_db[external_ref].update(payment_info)
         else:
             payments_db[external_ref] = {
-                "payment_id": payment_id,
-                "status": payment_data.get('status', 'pending'),
-                "fecha_creacion": datetime.now().isoformat(),
-                "fecha_actualizacion": datetime.now().isoformat()
+                **payment_info,
+                "fecha_creacion": datetime.now().isoformat()
             }
 
-        logger.info(f"Pago actualizado - ID: {external_ref}, Payment: {payment_id}")
+        logger.info(f"Pago actualizado - ID: {external_ref}, Status: {payment_data.get('status')}")
 
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error de conexión al procesar pago {payment_id}: {str(e)}")
     except Exception as e:
-        logger.error(f"Error al procesar pago {payment_id}: {str(e)}")
+        logger.error(f"Error inesperado al procesar pago {payment_id}: {str(e)}")
 
 @app.post("/verificar_pago/")
 async def verificar_pago(request: Request):
@@ -244,12 +221,20 @@ async def verificar_pago(request: Request):
         latest_payment = max(results, key=lambda x: x["date_created"])
         
         # Actualizar base de datos local
-        payments_db[id_pago_unico].update({
+        payment_info = {
             "payment_id": latest_payment["id"],
             "status": latest_payment["status"],
             "monto": latest_payment["transaction_amount"],
             "fecha_actualizacion": datetime.now().isoformat()
-        })
+        }
+
+        if id_pago_unico in payments_db:
+            payments_db[id_pago_unico].update(payment_info)
+        else:
+            payments_db[id_pago_unico] = {
+                **payment_info,
+                "fecha_creacion": datetime.now().isoformat()
+            }
 
         return payments_db[id_pago_unico]
 
