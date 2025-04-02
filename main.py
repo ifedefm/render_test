@@ -1,12 +1,12 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
 from threading import Thread
 import logging
 from datetime import datetime
-import uuid  # Importamos uuid para generar identificadores únicos
+import uuid
 
 app = FastAPI()
 
@@ -26,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Base de datos temporal mejorada
+# Base de datos mejorada
 payments_db = {}
 
 @app.post("/crear_pago/")
@@ -40,11 +40,8 @@ async def crear_pago(request: Request):
         if not all([usuario_id, monto, email]):
             raise HTTPException(status_code=400, detail="Se requieren usuario_id, monto y email")
 
-        logger.info(f"Creando pago para usuario: {usuario_id}, monto: {monto}")
-
-        # Generamos un UUID único para este pago
         id_pago_unico = str(uuid.uuid4())
-        logger.info(f"ID único generado para el pago: {id_pago_unico}")
+        logger.info(f"Creando pago con ID único: {id_pago_unico}")
 
         preference_data = {
             "items": [{
@@ -62,16 +59,11 @@ async def crear_pago(request: Request):
             },
             "auto_return": "approved",
             "notification_url": f"{BASE_URL}/notificacion/",
-            "external_reference": id_pago_unico,  # Usamos el UUID como referencia
+            "external_reference": id_pago_unico,
             "binary_mode": True
         }
 
-        headers = {
-            "Authorization": f"Bearer {ACCESS_TOKEN}",
-            "Content-Type": "application/json"
-        }
-
-        # Añadido timeout para la solicitud a MP
+        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         response = requests.post(
             "https://api.mercadopago.com/checkout/preferences",
             json=preference_data,
@@ -86,171 +78,203 @@ async def crear_pago(request: Request):
 
         preference_id = response.json()["id"]
         
-        # Guardamos la relación entre preference_id y nuestro id_pago_unico
+        # Guardamos toda la información relevante
         payments_db[id_pago_unico] = {
             "preference_id": preference_id,
             "usuario_id": usuario_id,
             "monto": monto,
             "email": email,
-            "status": "pending",  # Estado inicial
-            "payment_id": None,   # Se actualizará cuando llegue el webhook
+            "status": "pending",
+            "payment_id": None,
+            "merchant_order_id": None,
             "fecha_creacion": datetime.now().isoformat()
         }
-        
-        logger.info(f"Preferencia creada exitosamente. Preference_id: {preference_id}, ID único: {id_pago_unico}")
 
         return {
-            "id_pago_unico": id_pago_unico,  # Devolvemos nuestro ID único
+            "id_pago_unico": id_pago_unico,
             "preference_id": preference_id,
             "url_pago": response.json()["init_point"]
         }
 
-    except requests.exceptions.Timeout:
-        logger.error("Timeout al conectar con MercadoPago")
-        raise HTTPException(status_code=504, detail="Timeout al conectar con MercadoPago")
     except Exception as e:
-        logger.error(f"Error inesperado al crear pago: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+        logger.error(f"Error al crear pago: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/notificacion/")
 async def webhook(request: Request):
     try:
-        # Aceptar tanto JSON como form-data
+        # Manejar tanto JSON como form-data
         try:
             data = await request.json()
         except:
-            form_data = await request.form()
-            data = dict(form_data)
+            data = await request.form()
+            data = dict(data)
 
-        logger.info(f"🔔 Notificación recibida: {data}")
+        logger.info(f"Notificación recibida: {data}")
 
-        # Extraer payment_id de diferentes formatos de notificación
-        payment_id = data.get('data', {}).get('id') or data.get('id') or data.get('payment_id')
-        
-        if not payment_id:
-            logger.error("No se encontró payment_id en la notificación")
-            return JSONResponse(content={"status": "invalid_data"}, status_code=400)
-
-        # Respuesta inmediata (MP requiere <500ms)
-        response = JSONResponse(content={"status": "received"})
-        
-        # Procesar en segundo plano
-        Thread(
-            target=process_payment_notification,
-            args=(payment_id,),
-            daemon=True
-        ).start()
-
-        return response
+        # Manejar diferentes tipos de notificaciones
+        if 'merchant_order' in data.get('topic', ''):
+            return await handle_merchant_order(data)
+        elif 'payment' in data.get('topic', ''):
+            return await handle_payment(data)
+        else:
+            logger.error(f"Tipo de notificación no soportada: {data}")
+            return JSONResponse(content={"status": "unsupported_notification"}, status_code=400)
 
     except Exception as e:
-        logger.error(f"🚨 Error en webhook: {str(e)}")
+        logger.error(f"Error en webhook: {str(e)}")
         return JSONResponse(content={"status": "error"}, status_code=500)
 
-def process_payment_notification(payment_id: str):
-    """Procesa la notificación y actualiza la base de datos"""
+async def handle_merchant_order(data: dict):
+    """Procesa notificaciones de merchant_order"""
+    merchant_order_url = data.get('resource')
+    if not merchant_order_url:
+        logger.error("No se encontró resource en merchant_order")
+        return JSONResponse(content={"status": "invalid_data"}, status_code=400)
+
     try:
-        logger.info(f"🔍 Procesando pago: {payment_id}")
+        # Obtener detalles de la merchant order
+        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        response = requests.get(merchant_order_url, headers=headers, timeout=10)
+        merchant_order = response.json()
+
+        merchant_order_id = merchant_order.get('id')
+        payments = merchant_order.get('payments', [])
+        
+        if payments:
+            payment_id = payments[0].get('id')
+            external_ref = merchant_order.get('external_reference')
+            
+            if payment_id and external_ref:
+                Thread(
+                    target=process_payment,
+                    args=(payment_id, external_ref),
+                    daemon=True
+                ).start()
+
+        return JSONResponse(content={"status": "processed"})
+
+    except Exception as e:
+        logger.error(f"Error al procesar merchant_order: {str(e)}")
+        return JSONResponse(content={"status": "error"}, status_code=500)
+
+async def handle_payment(data: dict):
+    """Procesa notificaciones de payment"""
+    payment_id = data.get('data', {}).get('id') or data.get('id')
+    if not payment_id:
+        logger.error("No se encontró payment_id en la notificación")
+        return JSONResponse(content={"status": "invalid_data"}, status_code=400)
+
+    Thread(
+        target=process_payment,
+        args=(payment_id, None),  # external_ref se obtendrá al procesar
+        daemon=True
+    ).start()
+
+    return JSONResponse(content={"status": "received"})
+
+def process_payment(payment_id: str, external_ref: str = None):
+    """Procesa un pago y actualiza la base de datos"""
+    try:
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         
-        # 1. Obtener detalles completos del pago desde MP
+        # Obtener detalles del pago
         payment_data = requests.get(
             f"https://api.mercadopago.com/v1/payments/{payment_id}",
             headers=headers,
             timeout=10
         ).json()
 
-        # 2. Verificar estructura de respuesta
-        if 'id' not in payment_data:
-            logger.error(f"Respuesta inválida de MP: {payment_data}")
+        # Obtener external_reference si no se proporcionó
+        external_ref = external_ref or payment_data.get('external_reference')
+        if not external_ref:
+            logger.error(f"No se encontró external_reference para el pago {payment_id}")
             return
 
-        # 3. Obtener nuestro id_pago_unico (external_reference)
-        id_pago_unico = payment_data.get('external_reference')
-        if not id_pago_unico:
-            logger.error(f"No se encontró external_reference en el pago {payment_id}")
-            return
-
-        # 4. Actualizar base de datos
-        if id_pago_unico in payments_db:
-            payments_db[id_pago_unico].update({
+        # Actualizar base de datos
+        if external_ref in payments_db:
+            payments_db[external_ref].update({
                 "payment_id": payment_id,
-                "status": payment_data.get('status'),
-                "monto": payment_data.get('transaction_amount'),
-                "fecha_aprobacion": payment_data.get('date_approved'),
-                "ultima_actualizacion": datetime.now().isoformat()
+                "status": payment_data.get('status', 'pending'),
+                "fecha_actualizacion": datetime.now().isoformat()
             })
         else:
-            # Si no existe, creamos un nuevo registro
-            payments_db[id_pago_unico] = {
+            payments_db[external_ref] = {
                 "payment_id": payment_id,
-                "status": payment_data.get('status'),
-                "monto": payment_data.get('transaction_amount'),
-                "fecha_aprobacion": payment_data.get('date_approved'),
-                "ultima_actualizacion": datetime.now().isoformat(),
-                "preference_id": None  # No lo tenemos en este caso
+                "status": payment_data.get('status', 'pending'),
+                "fecha_creacion": datetime.now().isoformat(),
+                "fecha_actualizacion": datetime.now().isoformat()
             }
-        
-        logger.info(f"✅ Pago actualizado - ID Único: {id_pago_unico}, Payment: {payment_id}")
+
+        logger.info(f"Pago actualizado - ID: {external_ref}, Payment: {payment_id}")
 
     except Exception as e:
-        logger.error(f"⚠️ Error al procesar pago {payment_id}: {str(e)}")
+        logger.error(f"Error al procesar pago {payment_id}: {str(e)}")
 
 @app.post("/verificar_pago/")
 async def verificar_pago(request: Request):
     try:
         data = await request.json()
-        id_pago_unico = data.get("id_pago_unico")  # Ahora recibimos nuestro UUID
+        id_pago_unico = data.get("id_pago_unico")
         
         if not id_pago_unico:
             raise HTTPException(status_code=400, detail="Se requiere id_pago_unico")
 
-        logger.info(f"🔎 Verificando pago para id_pago_unico: {id_pago_unico}")
+        logger.info(f"Verificando pago para ID: {id_pago_unico}")
 
         # 1. Buscar en base de datos local
         if id_pago_unico in payments_db:
-            return payments_db[id_pago_unico]
-        
-        # 2. Si no está local, consultar directamente a MP usando nuestro UUID como external_reference
+            pago = payments_db[id_pago_unico]
+            if pago.get("payment_id"):
+                return pago
+
+        # 2. Si no está completo, consultar a MP
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         search_url = f"https://api.mercadopago.com/v1/payments/search?external_reference={id_pago_unico}"
         
-        try:
-            response = requests.get(search_url, headers=headers, timeout=15)
-            if response.status_code != 200:
-                raise HTTPException(status_code=400, detail="Error al consultar MercadoPago")
+        response = requests.get(search_url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Error al consultar MercadoPago")
 
-            results = response.json().get("results", [])
-            
-            if not results:
-                return {"status": "pending", "detail": "No se encontraron transacciones"}
+        results = response.json().get("results", [])
+        if not results:
+            return {"status": "pending", "detail": "No se encontraron transacciones"}
 
-            # Tomar el pago más reciente
-            latest_payment = max(results, key=lambda x: x["date_created"])
-            
-            # Actualizar base de datos local
-            payments_db[id_pago_unico] = {
-                "payment_id": latest_payment["id"],
-                "status": latest_payment["status"],
-                "monto": latest_payment["transaction_amount"],
-                "fecha_aprobacion": latest_payment["date_approved"],
-                "ultima_actualizacion": datetime.now().isoformat(),
-                "preference_id": None  # No lo tenemos en este caso
-            }
-            
-            return payments_db[id_pago_unico]
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error de conexión con MP: {str(e)}")
-            raise HTTPException(status_code=503, detail="Error al conectar con MercadoPago")
+        # Tomar el pago más reciente
+        latest_payment = max(results, key=lambda x: x["date_created"])
+        
+        # Actualizar base de datos local
+        payments_db[id_pago_unico].update({
+            "payment_id": latest_payment["id"],
+            "status": latest_payment["status"],
+            "monto": latest_payment["transaction_amount"],
+            "fecha_actualizacion": datetime.now().isoformat()
+        })
+
+        return payments_db[id_pago_unico]
 
     except Exception as e:
-        logger.error(f"Error inesperado: {str(e)}")
+        logger.error(f"Error al verificar pago: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/pago_exitoso")
-async def pago_exitoso():
-    return {"status": "success"}
+async def pago_exitoso(
+    collection_id: str = None,
+    collection_status: str = None,
+    payment_id: str = None,
+    status: str = None,
+    external_reference: str = None,
+    preference_id: str = None,
+    merchant_order_id: str = None
+):
+    """Endpoint para redirección después de pago exitoso"""
+    if external_reference and external_reference in payments_db:
+        payments_db[external_reference].update({
+            "payment_id": payment_id or collection_id,
+            "status": status or collection_status,
+            "fecha_actualizacion": datetime.now().isoformat()
+        })
+    return RedirectResponse(url=f"/?pago=exitoso&id={external_reference}")
 
 @app.get("/pago_fallido")
 async def pago_fallido():
@@ -264,7 +288,6 @@ async def pago_pendiente():
 async def health_check():
     return {"status": "API operativa"}
 
-# Endpoint para debug (solo en desarrollo)
 @app.get("/debug/pagos")
 async def debug_pagos():
     return {
