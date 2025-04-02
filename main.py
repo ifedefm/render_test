@@ -6,6 +6,7 @@ import os
 from threading import Thread
 import logging
 from datetime import datetime
+import uuid  # Importamos uuid para generar identificadores únicos
 
 app = FastAPI()
 
@@ -41,6 +42,10 @@ async def crear_pago(request: Request):
 
         logger.info(f"Creando pago para usuario: {usuario_id}, monto: {monto}")
 
+        # Generamos un UUID único para este pago
+        id_pago_unico = str(uuid.uuid4())
+        logger.info(f"ID único generado para el pago: {id_pago_unico}")
+
         preference_data = {
             "items": [{
                 "title": f"Recarga saldo - {usuario_id}",
@@ -51,13 +56,13 @@ async def crear_pago(request: Request):
             "payer": {"email": email},
             "payment_methods": {"excluded_payment_types": [{"id": "atm"}]},
             "back_urls": {
-                "success": "https://testmiurlrender.streamlit.app/pago_exitoso",
+                "success": f"{BASE_URL}/pago_exitoso",
                 "failure": f"{BASE_URL}/pago_fallido",
                 "pending": f"{BASE_URL}/pago_pendiente"
             },
             "auto_return": "approved",
             "notification_url": f"{BASE_URL}/notificacion/",
-            "external_reference": usuario_id,
+            "external_reference": id_pago_unico,  # Usamos el UUID como referencia
             "binary_mode": True
         }
 
@@ -80,9 +85,22 @@ async def crear_pago(request: Request):
             raise HTTPException(status_code=400, detail=error_msg)
 
         preference_id = response.json()["id"]
-        logger.info(f"Preferencia creada exitosamente: {preference_id}")
+        
+        # Guardamos la relación entre preference_id y nuestro id_pago_unico
+        payments_db[id_pago_unico] = {
+            "preference_id": preference_id,
+            "usuario_id": usuario_id,
+            "monto": monto,
+            "email": email,
+            "status": "pending",  # Estado inicial
+            "payment_id": None,   # Se actualizará cuando llegue el webhook
+            "fecha_creacion": datetime.now().isoformat()
+        }
+        
+        logger.info(f"Preferencia creada exitosamente. Preference_id: {preference_id}, ID único: {id_pago_unico}")
 
         return {
+            "id_pago_unico": id_pago_unico,  # Devolvemos nuestro ID único
             "preference_id": preference_id,
             "url_pago": response.json()["init_point"]
         }
@@ -100,7 +118,6 @@ async def webhook(request: Request):
         # Aceptar tanto JSON como form-data
         try:
             data = await request.json()
-            logger.info(f"Datos recibidos en formato JSON: {data}")
         except:
             form_data = await request.form()
             data = dict(form_data)
@@ -148,22 +165,33 @@ def process_payment_notification(payment_id: str):
             logger.error(f"Respuesta inválida de MP: {payment_data}")
             return
 
-        # 3. Obtener preference_id (external_reference)
-        preference_id = payment_data.get('external_reference')
-        if not preference_id:
+        # 3. Obtener nuestro id_pago_unico (external_reference)
+        id_pago_unico = payment_data.get('external_reference')
+        if not id_pago_unico:
             logger.error(f"No se encontró external_reference en el pago {payment_id}")
             return
 
         # 4. Actualizar base de datos
-        payments_db[preference_id] = {
-            "payment_id": payment_id,
-            "status": payment_data.get('status'),
-            "monto": payment_data.get('transaction_amount'),
-            "fecha": payment_data.get('date_approved'),
-            "ultima_actualizacion": datetime.now().isoformat()
-        }
+        if id_pago_unico in payments_db:
+            payments_db[id_pago_unico].update({
+                "payment_id": payment_id,
+                "status": payment_data.get('status'),
+                "monto": payment_data.get('transaction_amount'),
+                "fecha_aprobacion": payment_data.get('date_approved'),
+                "ultima_actualizacion": datetime.now().isoformat()
+            })
+        else:
+            # Si no existe, creamos un nuevo registro
+            payments_db[id_pago_unico] = {
+                "payment_id": payment_id,
+                "status": payment_data.get('status'),
+                "monto": payment_data.get('transaction_amount'),
+                "fecha_aprobacion": payment_data.get('date_approved'),
+                "ultima_actualizacion": datetime.now().isoformat(),
+                "preference_id": None  # No lo tenemos en este caso
+            }
         
-        logger.info(f"✅ Pago actualizado - Preference: {preference_id}, Payment: {payment_id}")
+        logger.info(f"✅ Pago actualizado - ID Único: {id_pago_unico}, Payment: {payment_id}")
 
     except Exception as e:
         logger.error(f"⚠️ Error al procesar pago {payment_id}: {str(e)}")
@@ -172,20 +200,20 @@ def process_payment_notification(payment_id: str):
 async def verificar_pago(request: Request):
     try:
         data = await request.json()
-        preference_id = data.get("preference_id")
+        id_pago_unico = data.get("id_pago_unico")  # Ahora recibimos nuestro UUID
         
-        if not preference_id:
-            raise HTTPException(status_code=400, detail="Se requiere preference_id")
+        if not id_pago_unico:
+            raise HTTPException(status_code=400, detail="Se requiere id_pago_unico")
 
-        logger.info(f"🔎 Verificando pago para preference_id: {preference_id}")
+        logger.info(f"🔎 Verificando pago para id_pago_unico: {id_pago_unico}")
 
         # 1. Buscar en base de datos local
-        if preference_id in payments_db:
-            return payments_db[preference_id]
+        if id_pago_unico in payments_db:
+            return payments_db[id_pago_unico]
         
-        # 2. Si no está local, consultar directamente a MP
+        # 2. Si no está local, consultar directamente a MP usando nuestro UUID como external_reference
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-        search_url = f"https://api.mercadopago.com/v1/payments/search?external_reference={preference_id}"
+        search_url = f"https://api.mercadopago.com/v1/payments/search?external_reference={id_pago_unico}"
         
         try:
             response = requests.get(search_url, headers=headers, timeout=15)
@@ -201,15 +229,16 @@ async def verificar_pago(request: Request):
             latest_payment = max(results, key=lambda x: x["date_created"])
             
             # Actualizar base de datos local
-            payments_db[preference_id] = {
+            payments_db[id_pago_unico] = {
                 "payment_id": latest_payment["id"],
                 "status": latest_payment["status"],
                 "monto": latest_payment["transaction_amount"],
-                "fecha": latest_payment["date_approved"],
-                "ultima_actualizacion": datetime.now().isoformat()
+                "fecha_aprobacion": latest_payment["date_approved"],
+                "ultima_actualizacion": datetime.now().isoformat(),
+                "preference_id": None  # No lo tenemos en este caso
             }
             
-            return payments_db[preference_id]
+            return payments_db[id_pago_unico]
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Error de conexión con MP: {str(e)}")
