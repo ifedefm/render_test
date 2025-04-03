@@ -84,6 +84,7 @@ def carga_ganamos(alias: str, monto: float) -> tuple[bool, float]:
     Versión mejorada para cargar saldo en Ganamos que trabaja con login_ganamos
     Retorna: (éxito: bool, balance_actual: float)
     """
+    alias = alias.lower()
     # Configuración de reintentos
     session = requests.Session()
     retries = Retry(
