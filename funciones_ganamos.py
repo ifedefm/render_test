@@ -108,7 +108,7 @@ def carga_ganamos(alias: str, monto: float) -> tuple[bool, float]:
 
     try:
         # 1. Obtener credenciales y sesión usando login_ganamos
-        lista_usuarios, session_id = login_ganamos2()
+        lista_usuarios, session_id = login_ganamos()
         
         # Verificar que el alias existe
         if alias not in lista_usuarios:
