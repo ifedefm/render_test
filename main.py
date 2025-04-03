@@ -7,6 +7,7 @@ from threading import Thread
 import logging
 from datetime import datetime
 import uuid
+from funciones_ganamos import carga_ganamos
 
 app = FastAPI()
 
@@ -174,6 +175,34 @@ def process_payment_notification(payment_id: str):
         }
 
         if external_ref in payments_db:
+            # Verificar si el estado cambió a approved y si no se ha procesado antes
+            if (payment_data.get('status') == 'approved' and 
+                payments_db[external_ref].get('status') != 'approved' and
+                not payments_db[external_ref].get('procesado_ganamos')):
+                
+                # Obtener datos del pago
+                usuario_id = payments_db[external_ref].get('usuario_id')
+                monto = payments_db[external_ref].get('monto')
+                
+                if usuario_id and monto:
+                    try:
+                        logger.info(f"Intentando cargar saldo en Ganamos para usuario {usuario_id}")
+                        success, balance = carga_ganamos(usuario_id, float(monto))
+                        
+                        if success:
+                            logger.info(f"Carga exitosa en Ganamos. Nuevo balance: {balance}")
+                            payment_info['procesado_ganamos'] = True
+                            payment_info['ganamos_success'] = True
+                            payment_info['ganamos_balance'] = balance
+                        else:
+                            logger.error(f"Fallo en carga a Ganamos para usuario {usuario_id}")
+                            payment_info['procesado_ganamos'] = True
+                            payment_info['ganamos_success'] = False
+                    except Exception as e:
+                        logger.error(f"Error al ejecutar carga_ganamos: {str(e)}")
+                        payment_info['procesado_ganamos'] = True
+                        payment_info['ganamos_success'] = False
+
             payments_db[external_ref].update(payment_info)
         else:
             payments_db[external_ref] = {
