@@ -4,7 +4,6 @@ import time
 import logging
 from threading import Thread
 from datetime import datetime
-from funciones_ganamos import carga_ganamos
 import time
 
 def login_ganamos():
