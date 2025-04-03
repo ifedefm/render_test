@@ -9,7 +9,7 @@ from funciones_ganamos import *
 csv_file = 'data.csv'
 
 
-def login_ganamos(usuario,contrasenia):
+def login_ganamos():
     url = 'https://agents.ganamos.bet/api/user/login'
 
     data = {
