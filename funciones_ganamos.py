@@ -1,46 +1,30 @@
 import requests
 import os
 import time
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 def login_ganamos():
-    """Función mejorada para login en Ganamos con manejo de errores"""
+    """Función simplificada para login en Ganamos"""
     url = 'https://agents.ganamos.bet/api/user/login'
     
     try:
-        # Obtener credenciales de variables de entorno
-        username = os.getenv("GANAMOS_USER", "adminflamingo")
-        password = os.getenv("GANAMOS_PASS", "1111aaaa")
-        
+        # Credenciales (usar variables de entorno en producción)
         data = {
-            "password": password,
-            "username": username    
+            "password": os.getenv("GANAMOS_PASS", "1111aaaa"),
+            "username": os.getenv("GANAMOS_USER", "adminflamingo")    
         }
 
         headers = {
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json;charset=UTF-8",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Referer": "https://agents.ganamos.bet/"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         }
 
-        # Configuración de reintentos
-        session = requests.Session()
-        retries = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[500, 502, 503, 504, 403],
-            allowed_methods=["POST"]
-        )
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-
-        # 1. Login
-        response = session.post(url, json=data, headers=headers, timeout=10)
+        # 1. Login (con timeout de 10 segundos)
+        response = requests.post(url, json=data, headers=headers, timeout=10)
         response.raise_for_status()
         
         if 'session' not in response.cookies:
-            raise ValueError("No se encontró cookie de sesión en la respuesta")
+            raise ValueError("No se encontró cookie de sesión")
             
         session_id = response.cookies["session"]
 
@@ -51,7 +35,7 @@ def login_ganamos():
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
         }
         
-        response_check = session.get(
+        response_check = requests.get(
             "https://agents.ganamos.bet/api/user/check",
             headers=header_check,
             timeout=10
@@ -62,12 +46,12 @@ def login_ganamos():
 
         # 3. Obtener lista de usuarios
         params_users = {
-            'count': '100',  # Aumentamos el límite para obtener todos los usuarios
+            'count': '100',
             'page': '0',
             'user_id': parent_id
         }
         
-        response_users = session.get(
+        response_users = requests.get(
             'https://agents.ganamos.bet/api/agent_admin/user/',
             params=params_users,
             headers=header_check,
@@ -79,32 +63,23 @@ def login_ganamos():
         return lista_usuarios, session_id
 
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Error de conexión en login_ganamos: {str(e)}")
+        raise Exception(f"Error de conexión: {str(e)}")
     except Exception as e:
-        raise Exception(f"Error inesperado en login_ganamos: {str(e)}")
+        raise Exception(f"Error inesperado: {str(e)}")
 
 def carga_ganamos(alias: str, monto: float) -> tuple[bool, float]:
-    """Versión mejorada para cargar saldo en Ganamos"""
+    """Versión simplificada para cargar saldo en Ganamos (1 solo intento)"""
     try:
         # 1. Obtener credenciales y sesión
         lista_usuarios, session_id = login_ganamos()
         
         # 2. Verificar que el alias existe
         if alias not in lista_usuarios:
-            raise ValueError(f"El usuario '{alias}' no existe en la lista de usuarios")
+            raise ValueError(f"Usuario '{alias}' no encontrado")
             
         user_id = lista_usuarios[alias]
 
-        # 3. Configurar sesión para la carga
-        session = requests.Session()
-        retries = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["POST", "GET"]
-        )
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-
+        # 3. Configurar headers para la carga
         headers = {
             "accept": "application/json, text/plain, */*",
             "content-type": "application/json",
@@ -113,11 +88,11 @@ def carga_ganamos(alias: str, monto: float) -> tuple[bool, float]:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
         }
 
-        # 4. Realizar la carga
+        # 4. Realizar la carga (con timeout de 15 segundos)
         payment_url = f"https://agents.ganamos.bet/api/agent_admin/user/{user_id}/payment/"
         payment_data = {"operation": 0, "amount": float(monto)}
         
-        payment_response = session.post(
+        payment_response = requests.post(
             payment_url,
             json=payment_data,
             headers=headers,
@@ -125,10 +100,10 @@ def carga_ganamos(alias: str, monto: float) -> tuple[bool, float]:
         )
         payment_response.raise_for_status()
 
-        # 5. Verificar balance
-        time.sleep(2)  # Espera para asegurar actualización
+        # 5. Esperar 2 segundos y verificar balance
+        time.sleep(2)
         
-        balance_response = session.get(
+        balance_response = requests.get(
             "https://agents.ganamos.bet/api/user/balance",
             headers=headers,
             timeout=10
@@ -144,10 +119,9 @@ def carga_ganamos(alias: str, monto: float) -> tuple[bool, float]:
         return True, balance
 
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Error de conexión en carga_ganamos: {str(e)}")
+        raise Exception(f"Error de conexión: {str(e)}")
     except Exception as e:
-        raise Exception(f"Error en carga_ganamos: {str(e)}")
-    
+        raise Exception(f"Error en carga: {str(e)}")
     
 def retirar_ganamos(alias, monto, usuario, contrasenia):
     lista_usuarios, session_id= login_ganamos(usuario,contrasenia)
