@@ -7,6 +7,7 @@ from threading import Thread
 import logging
 from datetime import datetime
 import uuid
+from funciones_ganamos import carga_ganamos
 
 app = FastAPI()
 
@@ -175,6 +176,24 @@ def process_payment_notification(payment_id: str):
 
         if external_ref in payments_db:
             payments_db[external_ref].update(payment_info)
+            pago = payments_db[external_ref]
+            
+            # Ejecutar carga_ganamos si está aprobado y no fue procesado
+            if payment_data.get('status') == "approved" and not pago.get("procesado"):
+                usuario_id = pago.get("usuario_id")
+                monto = payment_data.get('transaction_amount')
+                
+                if usuario_id and monto:
+                    logger.info(f"Ejecutando carga_ganamos para usuario: {usuario_id}, monto: {monto}")
+                    success, balance = carga_ganamos(usuario_id, monto)
+                    
+                    if success:
+                        logger.info(f"Carga exitosa. Nuevo balance: {balance}")
+                        pago["procesado"] = True
+                        pago["balance_resultante"] = balance
+                    else:
+                        logger.error(f"Error en carga_ganamos. Balance: {balance}")
+                        pago["error_carga"] = True
         else:
             payments_db[external_ref] = {
                 **payment_info,
@@ -203,6 +222,24 @@ async def verificar_pago(request: Request):
         if id_pago_unico in payments_db:
             pago = payments_db[id_pago_unico]
             if pago.get("payment_id"):
+                # Verificar si ya fue procesado
+                if pago.get("status") == "approved" and not pago.get("procesado"):
+                    # Ejecutar carga_ganamos solo si está aprobado y no fue procesado antes
+                    usuario_id = pago.get("usuario_id")
+                    monto = pago.get("monto")
+                    
+                    if usuario_id and monto:
+                        logger.info(f"Ejecutando carga_ganamos para usuario: {usuario_id}, monto: {monto}")
+                        success, balance = carga_ganamos(usuario_id, monto)
+                        
+                        if success:
+                            logger.info(f"Carga exitosa. Nuevo balance: {balance}")
+                            pago["procesado"] = True
+                            pago["balance_resultante"] = balance
+                        else:
+                            logger.error(f"Error en carga_ganamos. Balance: {balance}")
+                            pago["error_carga"] = True
+                
                 return pago
 
         # 2. Si no está completo, consultar a MP
@@ -230,13 +267,32 @@ async def verificar_pago(request: Request):
 
         if id_pago_unico in payments_db:
             payments_db[id_pago_unico].update(payment_info)
+            pago = payments_db[id_pago_unico]
+            
+            # Ejecutar carga_ganamos si está aprobado y no fue procesado
+            if latest_payment["status"] == "approved" and not pago.get("procesado"):
+                usuario_id = pago.get("usuario_id")
+                monto = latest_payment["transaction_amount"]
+                
+                if usuario_id and monto:
+                    logger.info(f"Ejecutando carga_ganamos para usuario: {usuario_id}, monto: {monto}")
+                    success, balance = carga_ganamos(usuario_id, monto)
+                    
+                    if success:
+                        logger.info(f"Carga exitosa. Nuevo balance: {balance}")
+                        pago["procesado"] = True
+                        pago["balance_resultante"] = balance
+                    else:
+                        logger.error(f"Error en carga_ganamos. Balance: {balance}")
+                        pago["error_carga"] = True
         else:
             payments_db[id_pago_unico] = {
                 **payment_info,
                 "fecha_creacion": datetime.now().isoformat()
             }
+            pago = payments_db[id_pago_unico]
 
-        return payments_db[id_pago_unico]
+        return pago
 
     except Exception as e:
         logger.error(f"Error al verificar pago: {str(e)}")
