@@ -3,125 +3,99 @@ import os
 import time
 
 def login_ganamos():
-    """Función simplificada para login en Ganamos"""
-    url = 'https://agents.ganamos.bet/api/user/login'
-    
+    """Función de login para Ganamos con manejo de errores mejorado"""
     try:
-        # Credenciales (usar variables de entorno en producción)
-        data = {
-            "password": os.getenv("GANAMOS_PASS", "1111aaaa"),
-            "username": os.getenv("GANAMOS_USER", "adminflamingo")    
-        }
-
+        url = 'https://agents.ganamos.bet/api/user/login'
+        data = {"password": '1111aaaa', "username": 'adminflamingo'}
+        
         headers = {
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json;charset=UTF-8",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         }
 
-        # 1. Login (con timeout de 10 segundos)
-        response = requests.post(url, json=data, headers=headers, timeout=10)
+        response = session.post(url, json=data, headers=headers, timeout=10)
         response.raise_for_status()
         
-        if 'session' not in response.cookies:
-            raise ValueError("No se encontró cookie de sesión")
-            
+        if "session" not in response.cookies:
+            raise Exception("No se encontró cookie de sesión en la respuesta")
+        
         session_id = response.cookies["session"]
-
-        # 2. Verificar sesión
-        header_check = {
+        
+        # Verificar sesión
+        headers_check = {
             "accept": "application/json, text/plain, */*",
             "cookie": f"session={session_id}",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         }
         
-        response_check = requests.get(
-            "https://agents.ganamos.bet/api/user/check",
-            headers=header_check,
-            timeout=10
-        )
-        response_check.raise_for_status()
+        # Obtener ID del usuario padre
+        check_url = "https://agents.ganamos.bet/api/user/check"
+        check_response = session.get(check_url, headers=headers_check, timeout=10)
+        check_response.raise_for_status()
+        parent_id = check_response.json()['result']['id']
         
-        parent_id = response_check.json()['result']['id']
-
-        # 3. Obtener lista de usuarios
-        params_users = {
-            'count': '100',
-            'page': '0',
-            'user_id': parent_id
-        }
+        # Obtener lista de usuarios
+        users_url = 'https://agents.ganamos.bet/api/agent_admin/user/'
+        params = {'count': '100', 'page': '0', 'user_id': parent_id}
+        users_response = session.get(users_url, params=params, headers=headers_check, timeout=10)
+        users_response.raise_for_status()
         
-        response_users = requests.get(
-            'https://agents.ganamos.bet/api/agent_admin/user/',
-            params=params_users,
-            headers=header_check,
-            timeout=10
-        )
-        response_users.raise_for_status()
+        lista_usuarios = {x['username']: x['id'] for x in users_response.json()["result"]["users"]}
         
-        lista_usuarios = {x['username']: x['id'] for x in response_users.json()["result"]["users"]}
         return lista_usuarios, session_id
-
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"Error de conexión: {str(e)}")
+        
     except Exception as e:
-        raise Exception(f"Error inesperado: {str(e)}")
+        logger.error(f"Error en login_ganamos2: {str(e)}")
+        raise
 
 def carga_ganamos(alias: str, monto: float) -> tuple[bool, float]:
-    """Versión simplificada para cargar saldo en Ganamos (1 solo intento)"""
+    """Versión mejorada para cargar saldo en Ganamos con manejo de errores"""
     try:
-        # 1. Obtener credenciales y sesión
-        lista_usuarios, session_id = login_ganamos()
+        # 1. Obtener credenciales
+        lista_usuarios, session_id = login_ganamos2()
         
-        # 2. Verificar que el alias existe
         if alias not in lista_usuarios:
-            raise ValueError(f"Usuario '{alias}' no encontrado")
+            logger.error(f"Usuario '{alias}' no encontrado")
+            return False, 0.0
             
         user_id = lista_usuarios[alias]
 
-        # 3. Configurar headers para la carga
+        # 2. Configurar headers para la carga
         headers = {
             "accept": "application/json, text/plain, */*",
-            "content-type": "application/json",
             "cookie": f"session={session_id}",
-            "referer": "https://agents.ganamos.bet/",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         }
 
-        # 4. Realizar la carga (con timeout de 15 segundos)
+        # 3. Realizar la carga
         payment_url = f"https://agents.ganamos.bet/api/agent_admin/user/{user_id}/payment/"
         payment_data = {"operation": 0, "amount": float(monto)}
         
-        payment_response = requests.post(
+        payment_response = session.post(
             payment_url,
             json=payment_data,
             headers=headers,
-            timeout=15
+            timeout=10
         )
         payment_response.raise_for_status()
 
-        # 5. Esperar 2 segundos y verificar balance
+        # 4. Verificar balance después de 2 segundos
         time.sleep(2)
-        
-        balance_response = requests.get(
-            "https://agents.ganamos.bet/api/user/balance",
-            headers=headers,
-            timeout=10
-        )
+        balance_url = "https://agents.ganamos.bet/api/user/balance"
+        balance_response = session.get(balance_url, headers=headers, timeout=10)
         balance_response.raise_for_status()
         
         balance = balance_response.json().get("result", {}).get("balance", 0.0)
-
-        # 6. Verificar que no haya mensaje de error
-        if payment_response.json().get("error_message"):
-            raise ValueError(payment_response.json().get("error_message"))
-
+        
         return True, balance
 
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Error de conexión: {str(e)}")
+        logger.error(f"Error de conexión en carga_ganamos2: {str(e)}")
+        return False, 0.0
     except Exception as e:
-        raise Exception(f"Error en carga: {str(e)}")
+        logger.error(f"Error inesperado en carga_ganamos2: {str(e)}")
+        return False, 0.0
     
 def retirar_ganamos(alias, monto, usuario, contrasenia):
     lista_usuarios, session_id= login_ganamos(usuario,contrasenia)
