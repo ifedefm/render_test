@@ -13,8 +13,8 @@ def login_ganamos():
     url = 'https://agents.ganamos.bet/api/user/login'
 
     data = {
-    "password": contrasenia,
-    "username": usuario    
+    "password": '1111aaaa',
+    "username": 'adminflamingo'    
     }
 
     headers = {
