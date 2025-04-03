@@ -7,7 +7,7 @@ from threading import Thread
 import logging
 from datetime import datetime
 import uuid
-from funciones_ganamos import carga_ganamos
+from funciones_ganamos import carga_ganamos, login_ganamos
 
 app = FastAPI()
 
