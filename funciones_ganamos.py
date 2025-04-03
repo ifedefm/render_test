@@ -5,6 +5,9 @@ import logging
 from threading import Thread
 from datetime import datetime
 import time
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+import requests
 
 def login_ganamos():
     
