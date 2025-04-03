@@ -147,14 +147,20 @@ async def webhook(request: Request):
 def process_payment_notification(payment_id: str):
     """Procesa una notificación de pago de forma robusta"""
     try:
+        # Si el payment_id es una URL, extraemos el ID real
+        if 'merchant_orders' in payment_id:
+            payment_id = payment_id.split('/')[-1]
+
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         
         # Obtener detalles del pago
-        payment_data = requests.get(
+        response = requests.get(
             f"https://api.mercadopago.com/v1/payments/{payment_id}",
             headers=headers,
             timeout=10
-        ).json()
+        )
+        response.raise_for_status()
+        payment_data = response.json()
 
         # Validar respuesta
         if 'status' not in payment_data:
@@ -175,8 +181,8 @@ def process_payment_notification(payment_id: str):
         }
 
         if external_ref in payments_db:
-            payments_db[external_ref].update(payment_info)
             pago = payments_db[external_ref]
+            pago.update(payment_info)
             
             # Ejecutar carga_ganamos si está aprobado y no fue procesado
             if payment_data.get('status') == "approved" and not pago.get("procesado"):
@@ -185,15 +191,24 @@ def process_payment_notification(payment_id: str):
                 
                 if usuario_id and monto:
                     logger.info(f"Ejecutando carga_ganamos para usuario: {usuario_id}, monto: {monto}")
-                    success, balance = carga_ganamos(usuario_id, monto)
-                    
-                    if success:
-                        logger.info(f"Carga exitosa. Nuevo balance: {balance}")
-                        pago["procesado"] = True
-                        pago["balance_resultante"] = balance
-                    else:
-                        logger.error(f"Error en carga_ganamos. Balance: {balance}")
+                    try:
+                        success, balance = carga_ganamos(usuario_id, monto)
+                        
+                        if success:
+                            logger.info(f"Carga exitosa. Nuevo balance: {balance}")
+                            pago.update({
+                                "procesado": True,
+                                "balance_resultante": balance,
+                                "fecha_procesado": datetime.now().isoformat()
+                            })
+                        else:
+                            logger.error(f"Error en carga_ganamos. Balance: {balance}")
+                            pago["error_carga"] = True
+                            
+                    except Exception as e:
+                        logger.error(f"Error al ejecutar carga_ganamos: {str(e)}")
                         pago["error_carga"] = True
+                        pago["detalle_error"] = str(e)
         else:
             payments_db[external_ref] = {
                 **payment_info,
