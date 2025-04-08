@@ -8,13 +8,6 @@ import time
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import requests
-
-import requests
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
-import logging
-from datetime import datetime
-import time
 import streamlit as st
 
 # Configuración de logging
