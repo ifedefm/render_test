@@ -106,42 +106,41 @@ async def webhook(request: Request):
     try:
         # Manejar diferentes formatos de notificación
         try:
-            content_type = request.headers.get('content-type')
-            if content_type == 'application/json':
-                data = await request.json()
-            else:
-                data = await request.form()
-                data = dict(data)
-        except Exception as e:
-            logger.error(f"Error al parsear notificación: {str(e)}")
-            return JSONResponse(content={"status": "parse_error"}, status_code=400)
-
+            data = await request.json()
+        except:
+            data = dict(await request.form())
+        
         logger.info(f"Notificación recibida: {data}")
 
-        # Extraer payment_id de diferentes formatos
+        # Extraer payment_id basado en diferentes formatos
         payment_id = None
-        if 'data' in data and 'id' in data['data']:  # Formato nuevo
+        
+        # Formato 1: Notificación directa de payment
+        if 'data' in data and 'id' in data['data']:
             payment_id = data['data']['id']
-        elif 'id' in data:  # Formato alternativo
+        elif 'id' in data:
             payment_id = data['id']
-        elif 'resource' in data:  # Notificación por query params
-            resource = data.get('resource')
+        
+        # Formato 2: Resource URL
+        elif 'resource' in data:
+            resource = data['resource']
             if isinstance(resource, str) and resource.isdigit():
                 payment_id = resource
-            elif isinstance(resource, str) and 'payments' in resource:
+            elif isinstance(resource, str) and '/payments/' in resource:
                 payment_id = resource.split('/')[-1]
-
-        if not payment_id:
-            logger.error("No se pudo extraer payment_id de la notificación")
-            return JSONResponse(content={"status": "invalid_data"}, status_code=400)
-
-        # Procesar en segundo plano
+        
+        # Ignorar completamente las merchant_orders
+        if not payment_id or 'merchant_order' in str(data.get('topic', '')):
+            logger.info("Ignorando notificación de merchant_order")
+            return JSONResponse(content={"status": "ignored"}, status_code=200)
+        
+        # Procesar en segundo plano solo si tenemos un payment_id válido
         Thread(
             target=process_payment_notification,
             args=(payment_id,),
             daemon=True
         ).start()
-
+        
         return JSONResponse(content={"status": "received"})
 
     except Exception as e:
@@ -149,44 +148,31 @@ async def webhook(request: Request):
         return JSONResponse(content={"status": "error"}, status_code=500)
 
 def process_payment_notification(payment_id: str):
-    """Procesa una notificación de pago de forma robusta"""
+    """Procesa una notificación de pago con un solo intento"""
     try:
-        # Extraer el ID real si viene en formato URL
-        if 'merchant_orders' in str(payment_id):
-            logger.info(f"Ignorando notificación de merchant_order: {payment_id}")
+        # Verificar si ya fue procesado
+        existing = next(
+            (p for p in payments_db.values() if p.get('payment_id') == payment_id), 
+            None
+        )
+        if existing and existing.get('procesado_ganamos'):
+            logger.info(f"Pago {payment_id} ya fue procesado")
             return
-            
-        # Asegurarnos de que es solo el ID numérico
-        payment_id = str(payment_id).split('/')[-1] if '/' in str(payment_id) else payment_id
-        
+
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         
         # Obtener detalles del pago
-        try:
-            payment_response = requests.get(
-                f"https://api.mercadopago.com/v1/payments/{payment_id}",
-                headers=headers,
-                timeout=10
-            )
-            payment_response.raise_for_status()
-            payment_data = payment_response.json()
-        except Exception as e:
-            logger.error(f"Error al obtener detalles del pago {payment_id}: {str(e)}")
-            return
-
-        # Validar respuesta
-        if 'status' not in payment_data:
-            logger.error(f"Respuesta inválida de MP para payment_id {payment_id}")
-            return
+        response = requests.get(
+            f"https://api.mercadopago.com/v1/payments/{payment_id}",
+            headers=headers,
+            timeout=15
+        )
+        response.raise_for_status()
+        payment_data = response.json()
 
         external_ref = payment_data.get('external_reference')
         if not external_ref:
-            logger.error(f"No se encontró external_reference para el pago {payment_id}")
-            return
-
-        # Verificar si ya fue procesado
-        if external_ref in payments_db and payments_db[external_ref].get('procesado_ganamos'):
-            logger.info(f"Pago {external_ref} ya fue procesado anteriormente")
+            logger.error("No external_reference en pago")
             return
 
         # Actualizar base de datos
@@ -205,41 +191,44 @@ def process_payment_notification(payment_id: str):
                 "fecha_creacion": datetime.now().isoformat()
             }
 
-        # Solo procesar si el pago está aprobado y no se ha procesado antes
-        if payment_data.get('status') == 'approved':
+        # Solo procesar si está aprobado y no procesado antes
+        if (payment_data.get('status') == 'approved' and 
+            not payments_db[external_ref].get('procesado_ganamos')):
+            
             usuario_id = payments_db[external_ref].get('usuario_id')
             monto = payments_db[external_ref].get('monto')
             
             if usuario_id and monto:
+                logger.info(f"Iniciando carga en Ganamos para {usuario_id}")
+                
+                # Intento único de carga
                 try:
-                    logger.info(f"Intentando cargar saldo en Ganamos para usuario {usuario_id}")
                     success, balance = carga_ganamos(usuario_id, float(monto))
                     
-                    # Actualizar estado en la base de datos
-                    update_data = {
+                    # Registrar resultado (incluso si falló)
+                    payments_db[external_ref].update({
                         "procesado_ganamos": True,
                         "ganamos_success": success,
                         "ganamos_balance": balance if success else None,
                         "ganamos_last_attempt": datetime.now().isoformat()
-                    }
-                    payments_db[external_ref].update(update_data)
+                    })
                     
                     if success:
-                        logger.info(f"Carga exitosa en Ganamos. Nuevo balance: {balance}")
+                        logger.info(f"Carga exitosa para {usuario_id}")
                     else:
-                        logger.error(f"Fallo en carga a Ganamos para usuario {usuario_id}")
+                        logger.error(f"Fallo en carga para {usuario_id}")
+                        
                 except Exception as e:
-                    logger.error(f"Error al ejecutar carga_ganamos: {str(e)}")
+                    logger.error(f"Error crítico en carga_ganamos: {str(e)}")
                     payments_db[external_ref].update({
                         "procesado_ganamos": True,
                         "ganamos_success": False,
+                        "ganamos_error": str(e),
                         "ganamos_last_attempt": datetime.now().isoformat()
                     })
 
-        logger.info(f"Pago actualizado - ID: {external_ref}, Status: {payment_data.get('status')}")
-
     except Exception as e:
-        logger.error(f"Error inesperado al procesar pago {payment_id}: {str(e)}")
+        logger.error(f"Error procesando pago {payment_id}: {str(e)}")
 
 @app.post("/verificar_pago/")
 async def verificar_pago(request: Request):
@@ -250,15 +239,11 @@ async def verificar_pago(request: Request):
         if not id_pago_unico:
             raise HTTPException(status_code=400, detail="Se requiere id_pago_unico")
 
-        logger.info(f"Verificando pago para ID: {id_pago_unico}")
-
-        # 1. Buscar en base de datos local
+        # Buscar en base de datos local
         if id_pago_unico in payments_db:
-            pago = payments_db[id_pago_unico]
-            if pago.get("payment_id"):
-                return pago
-
-        # 2. Si no está completo, consultar a MP
+            return payments_db[id_pago_unico]
+            
+        # Si no está, consultar MP
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         search_url = f"https://api.mercadopago.com/v1/payments/search?external_reference={id_pago_unico}"
         
@@ -268,26 +253,18 @@ async def verificar_pago(request: Request):
 
         results = response.json().get("results", [])
         if not results:
-            return {"status": "pending", "detail": "No se encontraron transacciones"}
+            return {"status": "not_found"}
 
-        # Tomar el pago más reciente
         latest_payment = max(results, key=lambda x: x["date_created"])
         
-        # Actualizar base de datos local
-        payment_info = {
+        # Guardar en DB
+        payments_db[id_pago_unico] = {
             "payment_id": latest_payment["id"],
             "status": latest_payment["status"],
             "monto": latest_payment["transaction_amount"],
+            "fecha_creacion": datetime.now().isoformat(),
             "fecha_actualizacion": datetime.now().isoformat()
         }
-
-        if id_pago_unico in payments_db:
-            payments_db[id_pago_unico].update(payment_info)
-        else:
-            payments_db[id_pago_unico] = {
-                **payment_info,
-                "fecha_creacion": datetime.now().isoformat()
-            }
 
         return payments_db[id_pago_unico]
 
