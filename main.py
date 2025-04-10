@@ -203,7 +203,8 @@ def process_payment_notification(payment_id: str):
                 
                 # Intento único de carga
                 try:
-                    success, balance = carga_ganamos(usuario_id, float(monto))
+                    from funciones_gencb import carga_genc
+                    success, balance = carga_genc(usuario_name=usuario_id, monto = int(monto))
                     
                     # Registrar resultado (incluso si falló)
                     payments_db[external_ref].update({
