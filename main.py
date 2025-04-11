@@ -240,11 +240,11 @@ async def verificar_pago(request: Request):
         if not id_pago_unico:
             raise HTTPException(status_code=400, detail="Se requiere id_pago_unico")
 
-        # Buscar en base de datos local
+        # Solo devolver datos existentes (sin procesar)
         if id_pago_unico in payments_db:
             return payments_db[id_pago_unico]
             
-        # Si no está, consultar MP
+        # Consultar MP para obtener información (sin disparar carga)
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         search_url = f"https://api.mercadopago.com/v1/payments/search?external_reference={id_pago_unico}"
         
@@ -258,13 +258,13 @@ async def verificar_pago(request: Request):
 
         latest_payment = max(results, key=lambda x: x["date_created"])
         
-        # Guardar en DB
+        # Guardar solo información (sin marcar como procesado)
         payments_db[id_pago_unico] = {
             "payment_id": latest_payment["id"],
             "status": latest_payment["status"],
             "monto": latest_payment["transaction_amount"],
-            "fecha_creacion": datetime.now().isoformat(),
-            "fecha_actualizacion": datetime.now().isoformat()
+            "fecha_actualizacion": datetime.now().isoformat(),
+            # NO agregar 'procesado_ganamos' aquí
         }
 
         return payments_db[id_pago_unico]
