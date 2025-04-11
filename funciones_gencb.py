@@ -1,50 +1,67 @@
 import requests
 
-def carga_genc(monto,usuario_name):
-    session = requests.Session()
+def carga_genc(monto, usuario_name):
+    try:
+        session = requests.Session()
 
-    url = 'https://wallet.casinoenvivo.club/api/admin/login'
-    payload = { 'alias': 'Cess93',
-                'password': 'Dota2dota2**',
-                'otp': '' }
-
-    response = session.post(url, json=payload)
-
-    response.json()
-    session_id = response.json()['user']['session']
-    company_id = response.json()['user']['company']
-    if session:                             
-        url_usuarios = 'https://wallet.casinoenvivo.club/api/admin/agentsUsersSearch'
-
-        payload_users = {
-        'session': f'{session_id}',
-        'freeText': f'{usuario_name}',
-        'company': 'GECN',
+        # 1. Login
+        url_login = 'https://wallet.casinoenvivo.club/api/admin/login'
+        payload_login = {
+            'alias': 'Cess93',
+            'password': 'Dota2dota2**',
+            'otp': ''
         }
 
-        response_user = session.post(url_usuarios, json=payload_users)
-        response_user.json()
-        dict_user = response_user.json()['users']
-        id_user = dict_user[0]['user']
-        name_user = dict_user[0]['alias']
-        db_user = dict_user[0]['db']
-        if name_user == payload_users['freeText']:
-            url_carga = 'https://wallet.casinoenvivo.club/api/admin/manualDeposit'
-            monto = int(monto)*100
-            payload = {
-                        "session": f"{session_id}",
-                        "company": f"{company_id}",
-                        "user": f"{id_user}",
-                        "method": "AGENTS",
-                        "amount": monto,
-                        "status": "NEW",
-                        "comment": "",
-                        "db": db_user
-                        }
+        response = session.post(url_login, json=payload_login)
+        response.raise_for_status()  # Lanza excepción si hay error HTTP
+        
+        login_data = response.json()
+        session_id = login_data['user']['session']
+        company_id = login_data['user']['company']
 
-            response_carga = session.post(url_carga, json=payload)
-            response_carga.json()
-            if response_carga.json()['result'] == 'OK':
-                return f'Carga Exitosa para {name_user}', 'success'
-            else:
-                return f'Error en la carga para {name_user}', 'error'
+        # 2. Buscar usuario
+        url_users = 'https://wallet.casinoenvivo.club/api/admin/agentsUsersSearch'
+        payload_users = {
+            'session': session_id,
+            'freeText': usuario_name,
+            'company': 'GECN',
+        }
+
+        response_user = session.post(url_users, json=payload_users)
+        response_user.raise_for_status()
+        
+        user_data = response_user.json()
+        if not user_data['users']:
+            return False, None  # Usuario no encontrado
+
+        target_user = user_data['users'][0]
+        if target_user['alias'] != usuario_name:
+            return False, None  # Usuario no coincide
+
+        # 3. Realizar carga
+        url_deposit = 'https://wallet.casinoenvivo.club/api/admin/manualDeposit'
+        payload_deposit = {
+            "session": session_id,
+            "company": company_id,
+            "user": target_user['user'],
+            "method": "AGENTS",
+            "amount": int(monto) * 100,
+            "status": "NEW",
+            "comment": "",
+            "db": target_user['db']
+        }
+
+        response_deposit = session.post(url_deposit, json=payload_deposit)
+        response_deposit.raise_for_status()
+        
+        deposit_result = response_deposit.json()
+        if deposit_result.get('result') == 'OK':
+            # Obtener balance actual (ajusta según la API real)
+            balance = 0  # Reemplaza con la lógica real para obtener el balance
+            return True, balance
+        else:
+            return False, None
+
+    except Exception as e:
+        print(f"Error en carga_genc: {str(e)}")
+        return False, None
