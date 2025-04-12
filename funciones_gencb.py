@@ -108,7 +108,7 @@ def user_is_valid(usuario_name):
         if not users:
             return False, {"error": "Usuario no encontrado"}
             
-        user_found = next((u for u in users if u['alias'] == usuario_name), None
+        user_found = next((u for u in users if u['alias'] == usuario_name), None)
         
         return bool(user_found), search_response.json()
         
