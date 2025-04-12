@@ -41,6 +41,18 @@ async def crear_pago(request: Request):
         if not all([usuario_id, monto, email]):
             raise HTTPException(status_code=400, detail="Se requieren usuario_id, monto y email")
 
+        # --- NUEVA VALIDACIÓN ---
+        from funciones_gencb import user_is_valid
+        is_valid, user_data = user_is_valid(usuario_id)
+        
+        if not is_valid:
+            logger.error(f"Usuario {usuario_id} no existe o no es válido")
+            raise HTTPException(
+                status_code=400,
+                detail=f"El usuario {usuario_id} no existe en el sistema"
+            )
+        # --- FIN VALIDACIÓN ---
+
         id_pago_unico = str(uuid.uuid4())
         logger.info(f"Creando pago con ID único: {id_pago_unico}")
 
@@ -53,12 +65,6 @@ async def crear_pago(request: Request):
             }],
             "payer": {"email": email},
             "payment_methods": {"excluded_payment_types": [{"id": "atm"}]},
-            "back_urls": {
-                "success": f"{BASE_URL}/pago_exitoso",
-                "failure": f"{BASE_URL}/pago_fallido",
-                "pending": f"{BASE_URL}/pago_pendiente"
-            },
-            "auto_return": "approved",
             "notification_url": f"{BASE_URL}/notificacion/",
             "external_reference": id_pago_unico,
             "binary_mode": True
@@ -79,7 +85,6 @@ async def crear_pago(request: Request):
 
         preference_id = response.json()["id"]
         
-        # Guardamos toda la información relevante
         payments_db[id_pago_unico] = {
             "preference_id": preference_id,
             "usuario_id": usuario_id,
@@ -87,7 +92,7 @@ async def crear_pago(request: Request):
             "email": email,
             "status": "pending",
             "payment_id": None,
-            "merchant_order_id": None,
+            "user_data": user_data,  # Guardamos los datos del usuario válido
             "fecha_creacion": datetime.now().isoformat()
         }
 
@@ -97,6 +102,8 @@ async def crear_pago(request: Request):
             "url_pago": response.json()["init_point"]
         }
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(f"Error al crear pago: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
