@@ -1,14 +1,18 @@
 import requests
+import pandas as pd
 
-def carga_genc(monto, usuario_name):
+
+
+
+def carga_genc(monto, usuario_name,usuario,contrasenia):
     try:
         session = requests.Session()
 
         # 1. Login
         url_login = 'https://wallet.casinoenvivo.club/api/admin/login'
         payload_login = {
-            'alias': 'Cess93',
-            'password': 'Dota2dota2**',
+            'alias': usuario,
+            'password': contrasenia,
             'otp': ''
         }
 
@@ -24,7 +28,7 @@ def carga_genc(monto, usuario_name):
         payload_users = {
             'session': session_id,
             'freeText': usuario_name,
-            'company': 'GECN',
+            'company': company_id,
         }
 
         response_user = session.post(url_users, json=payload_users)
@@ -66,13 +70,13 @@ def carga_genc(monto, usuario_name):
         print(f"Error en carga_genc: {str(e)}")
         return False, None
 
-def user_is_valid(usuario_name):
+def user_is_valid(usuario_name,usuario,contrasenia):
     session = requests.Session()
     
     # Datos de autenticación (considera usar variables de entorno)
     auth_data = {
-        'alias': 'Cess93',
-        'password': 'Dota2dota2**',
+        'alias': usuario,
+        'password': contrasenia,
         'otp': ''
     }
     

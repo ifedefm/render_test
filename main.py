@@ -7,8 +7,7 @@ from threading import Thread
 import logging
 from datetime import datetime
 import uuid
-from funciones_ganamos import carga_ganamos
-
+import pandas as pd
 app = FastAPI()
 
 # Configuración
@@ -37,21 +36,29 @@ async def crear_pago(request: Request):
         usuario_id = data.get("usuario_id")
         monto = data.get("monto")
         email = data.get("email")
-        
-        if not all([usuario_id, monto, email]):
-            raise HTTPException(status_code=400, detail="Se requieren usuario_id, monto y email")
+        plataforma = data.get("plataforma")
 
-        # --- NUEVA VALIDACIÓN ---
+        if not all([usuario_id, monto, email, plataforma]):
+            raise HTTPException(status_code=400, detail="Faltan campos obligatorios: usuario_id, monto, email o plataforma")
+
         from funciones_gencb import user_is_valid
-        is_valid, user_data = user_is_valid(usuario_id)
-        
+        login_data = pd.read_csv('logins.csv')
+        login_row = login_data[login_data['plataforma'] == plataforma]
+
+        if login_row.empty:
+            raise HTTPException(status_code=400, detail=f"No se encontró configuración para plataforma '{plataforma}'")
+
+        usuario_login = login_row.iloc[0]['usuario']
+        contrasenia_login = login_row.iloc[0]['contrasenia']
+
+        is_valid, user_data = user_is_valid(usuario_id, usuario_login, contrasenia_login)
+
         if not is_valid:
-            logger.error(f"Usuario {usuario_id} no existe o no es válido")
+            logger.error(f"Usuario {usuario_id} no es válido en {plataforma}")
             raise HTTPException(
                 status_code=400,
-                detail=f"El usuario {usuario_id} no existe en el sistema"
+                detail=f"El usuario {usuario_id} no existe en la plataforma '{plataforma}'"
             )
-        # --- FIN VALIDACIÓN ---
 
         id_pago_unico = str(uuid.uuid4())
         logger.info(f"Creando pago con ID único: {id_pago_unico}")
@@ -84,15 +91,16 @@ async def crear_pago(request: Request):
             raise HTTPException(status_code=400, detail=error_msg)
 
         preference_id = response.json()["id"]
-        
+
         payments_db[id_pago_unico] = {
             "preference_id": preference_id,
             "usuario_id": usuario_id,
             "monto": monto,
             "email": email,
+            "plataforma": plataforma,
             "status": "pending",
             "payment_id": None,
-            "user_data": user_data,  # Guardamos los datos del usuario válido
+            "user_data": user_data,
             "fecha_creacion": datetime.now().isoformat()
         }
 
@@ -150,7 +158,6 @@ def process_payment_notification(payment_id: str):
 
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
         
-        # Obtener detalles del pago desde MP
         response = requests.get(
             f"https://api.mercadopago.com/v1/payments/{payment_id}",
             headers=headers,
@@ -164,7 +171,6 @@ def process_payment_notification(payment_id: str):
             logger.error("No external_reference en pago")
             return
 
-        # Actualizar base de datos
         payment_info = {
             "payment_id": payment_id,
             "status": payment_data.get('status'),
@@ -180,34 +186,52 @@ def process_payment_notification(payment_id: str):
                 "fecha_creacion": datetime.now().isoformat()
             }
 
-        # Solo procesar si está aprobado y no procesado antes
         if (payment_data.get('status') == 'approved' and 
             not payments_db[external_ref].get('procesado_gencb')):
             
             usuario_id = payments_db[external_ref].get('usuario_id')
             monto = payments_db[external_ref].get('monto')
+            plataforma = payments_db[external_ref].get('plataforma')
             
-            if usuario_id and monto:
-                logger.info(f"Iniciando carga en Gencb para {usuario_id}")
+            if usuario_id and monto and plataforma:
+                logger.info(f"Iniciando carga en {plataforma} para {usuario_id}")
                 
-                # Intento único de carga
                 try:
                     from funciones_gencb import carga_genc
-                    result = carga_genc(usuario_name=usuario_id, monto=int(monto))
+                    import pandas as pd
+
+                    login_data = pd.read_csv('logins.csv')
+
+                    credenciales = login_data[login_data['plataforma'] == plataforma]
+
+                    if credenciales.empty:
+                        raise Exception(f"No se encontraron credenciales para la plataforma: {plataforma}")
+
+                    usuario = credenciales.iloc[0]['usuario']
+                    contrasenia = credenciales.iloc[0]['contraseña']
+
+                    result = carga_genc(
+                        usuario_name=usuario_id,
+                        monto=int(monto),
+                        usuario=usuario,
+                        contrasenia=contrasenia
+                    )
+
                     if result is None:
                         raise Exception("carga_genc no devolvió resultado")
+                    
                     success, balance = result
                     
                     # Registrar resultado
                     payments_db[external_ref].update({
-                        "procesado_gencb": True,  # Cambiado a "gencb"
-                        "gencb_success": success,  # Cambiado a "gencb"
-                        "gencb_balance": balance if success else None,  # Cambiado a "gencb"
-                        "gencb_last_attempt": datetime.now().isoformat()  # Cambiado a "gencb"
+                        "procesado_gencb": True,
+                        f"{plataforma}_success": success,
+                        f"{plataforma}_balance": balance if success else None,
+                        f"{plataforma}_last_attempt": datetime.now().isoformat()
                     })
                     
                     if success:
-                        logger.info(f"Carga exitosa en Gencb para {usuario_id}")
+                        logger.info(f"Carga exitosa en {plataforma} para {usuario_id}")
                     else:
                         logger.error(f"Fallo en carga para {usuario_id}")
                         
@@ -215,13 +239,14 @@ def process_payment_notification(payment_id: str):
                     logger.error(f"Error crítico en carga_genc: {str(e)}")
                     payments_db[external_ref].update({
                         "procesado_gencb": True,
-                        "gencb_success": False,
-                        "gencb_error": str(e),
-                        "gencb_last_attempt": datetime.now().isoformat()
+                        f"{plataforma}_success": False,
+                        f"{plataforma}_error": str(e),
+                        f"{plataforma}_last_attempt": datetime.now().isoformat()
                     })
 
     except Exception as e:
         logger.error(f"Error procesando pago {payment_id}: {str(e)}")
+
 
 @app.post("/verificar_pago/")
 async def verificar_pago(request: Request):
