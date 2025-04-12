@@ -256,11 +256,9 @@ async def verificar_pago(request: Request):
         if not id_pago_unico:
             raise HTTPException(status_code=400, detail="Se requiere id_pago_unico")
 
-        # Solo devolver información (sin procesar)
         if id_pago_unico in payments_db:
             pago_data = payments_db[id_pago_unico]
 
-            # Extraer plataforma de las claves disponibles (ej: "gencb_success")
             plataforma = None
             for key in pago_data:
                 if key.endswith("_success"):
