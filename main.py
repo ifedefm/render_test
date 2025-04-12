@@ -247,7 +247,6 @@ def process_payment_notification(payment_id: str):
     except Exception as e:
         logger.error(f"Error procesando pago {payment_id}: {str(e)}")
 
-
 @app.post("/verificar_pago/")
 async def verificar_pago(request: Request):
     try:
@@ -259,7 +258,21 @@ async def verificar_pago(request: Request):
 
         # Solo devolver información (sin procesar)
         if id_pago_unico in payments_db:
-            return payments_db[id_pago_unico]
+            pago_data = payments_db[id_pago_unico]
+
+            # Extraer plataforma de las claves disponibles (ej: "gencb_success")
+            plataforma = None
+            for key in pago_data:
+                if key.endswith("_success"):
+                    plataforma = key.replace("_success", "")
+                    break
+
+            if plataforma:
+                success_key = f"{plataforma}_success"
+                pago_data["gencb_success"] = pago_data.get(success_key)
+                pago_data["procesado_gencb"] = pago_data.get("procesado_gencb", False)
+
+            return pago_data
             
         # Consultar MP (solo para información)
         headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
@@ -288,6 +301,7 @@ async def verificar_pago(request: Request):
     except Exception as e:
         logger.error(f"Error al verificar pago: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/pago_exitoso")
 async def pago_exitoso(
