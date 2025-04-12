@@ -208,7 +208,7 @@ def process_payment_notification(payment_id: str):
                         raise Exception(f"No se encontraron credenciales para la plataforma: {plataforma}")
 
                     usuario = credenciales.iloc[0]['usuario']
-                    contrasenia = credenciales.iloc[0]['contraseña']
+                    contrasenia = credenciales.iloc[0]['contrasenia']
 
                     result = carga_genc(
                         usuario_name=usuario_id,
