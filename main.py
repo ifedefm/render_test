@@ -11,7 +11,7 @@ import pandas as pd
 app = FastAPI()
 
 # Configuración
-ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "APP_USR-5177967231468413-032619-a7b3ab70df053bfb323007e57562341f-324622221")
+ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "APP_USR-6860291365229768-041516-f3062a760f490a74252d13707b749f22-213411347")
 BASE_URL = os.getenv("BASE_URL", "https://streamlit-test-eiu8.onrender.com")
 
 # Configuración de logging
