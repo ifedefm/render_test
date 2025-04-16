@@ -232,6 +232,15 @@ def process_payment_notification(payment_id: str):
                     
                     if success:
                         logger.info(f"Carga exitosa en {plataforma} para {usuario_id}")
+                    
+# Nuevo: actualizar archivo CSV en GitHub 
+                        try:
+                            from funciones import actualizar_csv_pago
+                            actualizar_csv_pago(usuario_id, int(monto))
+                            logger.info("Archivo CSV actualizado exitosamente en GitHub")
+                        except Exception as e:
+                            logger.error(f"Error al actualizar el CSV en GitHub: {str(e)}")
+
                     else:
                         logger.error(f"Fallo en carga para {usuario_id}")
                         
