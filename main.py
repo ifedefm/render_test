@@ -235,7 +235,7 @@ def process_payment_notification(payment_id: str):
                     
 # Nuevo: actualizar archivo CSV en GitHub 
                         try:
-                            from funciones import actualizar_csv_pago
+                            from funciones_gencb import actualizar_csv_pago
                             actualizar_csv_pago(usuario_id, int(monto))
                             logger.info("Archivo CSV actualizado exitosamente en GitHub")
                         except Exception as e:
