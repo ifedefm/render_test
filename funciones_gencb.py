@@ -116,3 +116,50 @@ def user_is_valid(usuario_name,usuario,contrasenia):
         
     except Exception as e:
         return False, {"error": str(e)}
+
+
+def actualizar_csv_pago(usuario: str, monto: float, commit_message="Actualizar registros de cargas"):
+    file_name = "registros_cargas.csv"
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_name}"
+
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    
+    # Obtener archivo actual del repositorio
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        file_info = response.json()
+        sha = file_info["sha"]
+        content_encoded = file_info["content"]
+        csv_str = base64.b64decode(content_encoded).decode('utf-8')
+        df = pd.read_csv(StringIO(csv_str))
+    elif response.status_code == 404:
+        # Si no existe el archivo, se crea uno nuevo
+        df = pd.DataFrame(columns=["usuario", "monto_cargado_hasta_la_fecha"])
+        sha = None
+    else:
+        raise Exception(f"Error al obtener el archivo CSV desde GitHub: {response.json()}")
+
+    # Actualizar o agregar fila del usuario
+    if usuario in df["usuario"].values:
+        df.loc[df["usuario"] == usuario, "monto_cargado_hasta_la_fecha"] += monto
+    else:
+        df = df.append({"usuario": usuario, "monto_cargado_hasta_la_fecha": monto}, ignore_index=True)
+
+    # Convertir de nuevo a CSV
+    csv_updated = df.to_csv(index=False)
+    encoded_content = base64.b64encode(csv_updated.encode()).decode()
+
+    # Preparar payload para PUT
+    data = {
+        "message": commit_message,
+        "content": encoded_content,
+        "branch": GITHUB_BRANCH,
+    }
+    if sha:
+        data["sha"] = sha
+
+    put_response = requests.put(url, headers=headers, json=data)
+    if put_response.status_code not in [200, 201]:
+        raise Exception(f"Error al actualizar el archivo en GitHub: {put_response.json()}")
+
+    return {"mensaje": "CSV actualizado exitosamente"}
