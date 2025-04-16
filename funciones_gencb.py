@@ -152,7 +152,7 @@ def actualizar_csv_pago(usuario: str, monto: float, commit_message="Actualizar r
     if usuario in df["usuario"].values:
         df.loc[df["usuario"] == usuario, "monto_cargado_hasta_la_fecha"] += monto
     else:
-        df = df.append({"usuario": usuario, "monto_cargado_hasta_la_fecha": monto}, ignore_index=True)
+        df = pd.concat({"usuario": usuario, "monto_cargado_hasta_la_fecha": monto}, ignore_index=True)
 
     # Convertir de nuevo a CSV
     csv_updated = df.to_csv(index=False)
