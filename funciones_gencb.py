@@ -2,8 +2,6 @@ import requests
 import pandas as pd
 
 
-
-
 def carga_genc(monto, usuario_name,usuario,contrasenia):
     try:
         session = requests.Session()
