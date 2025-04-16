@@ -40,7 +40,7 @@ async def crear_pago(request: Request):
         email = data.get("email")
         plataforma = data.get("plataforma")
 
-        if not all([usuario_id, monto, email, plataforma]):
+        if not all([usuario_id, monto, plataforma]):
             raise HTTPException(status_code=400, detail="Faltan campos obligatorios: usuario_id, monto, email o plataforma")
 
         from funciones_gencb import user_is_valid
