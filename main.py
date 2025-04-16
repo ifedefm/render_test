@@ -8,6 +8,8 @@ import logging
 from datetime import datetime
 import uuid
 import pandas as pd
+import traceback
+
 app = FastAPI()
 
 # Configuración
@@ -239,7 +241,7 @@ def process_payment_notification(payment_id: str):
                             actualizar_csv_pago(usuario_id, int(monto))
                             logger.info("Archivo CSV actualizado exitosamente en GitHub")
                         except Exception as e:
-                            logger.error(f"Error al actualizar el CSV en GitHub: {str(e)}")
+                            logger.error(f"Error al actualizar el CSV en GitHub: {traceback.format_exc()}")
 
                     else:
                         logger.error(f"Fallo en carga para {usuario_id}")
