@@ -129,7 +129,7 @@ def user_is_valid(usuario_name,usuario,contrasenia):
 
 def actualizar_csv_pago(usuario: str, monto: float, commit_message="Actualizar registros de cargas"):
     file_name = "registros_cargas.csv"
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/pages/datos/{file_name}"
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_name}"
 
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     
