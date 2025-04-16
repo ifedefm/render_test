@@ -1,6 +1,15 @@
 import requests
 import pandas as pd
 
+#FUNCION UPDATE CSV
+import base64    
+import os        
+from io import StringIO    
+# Configuración de GitHub
+GITHUB_REPO = "ifedefm/render_test"
+GITHUB_BRANCH = "main"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # debe estar seteado en tus env variables de Render
+#FUNCION UPDATE CSV
 
 def carga_genc(monto, usuario_name,usuario,contrasenia):
     try:
